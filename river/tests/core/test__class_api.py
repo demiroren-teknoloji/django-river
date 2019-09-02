@@ -1,0 +1,229 @@
+from datetime import datetime, timedelta
+
+from django.contrib.contenttypes.models import ContentType
+from django.test import TestCase
+from hamcrest import assert_that, equal_to, has_item, all_of, has_property, less_than, has_items
+
+from river.models import TransitionApproval
+from river.models.factories import PermissionObjectFactory, UserObjectFactory, StateObjectFactory, TransitionApprovalMetaFactory, GroupObjectFactory
+from river.tests.models import TestModel
+from river.tests.models.factories import TestModelObjectFactory
+
+
+# noinspection PyMethodMayBeStatic,DuplicatedCode
+class ClassApiTest(TestCase):
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.content_type = ContentType.objects.get_for_model(TestModel)
+
+    def test_shouldReturnNoApprovalWhenUserIsUnAuthorized(self):
+        unauthorized_user = UserObjectFactory()
+
+        state1 = StateObjectFactory(label="state1")
+        state2 = StateObjectFactory(label="state2")
+
+        approval_meta = TransitionApprovalMetaFactory.create(
+            field_name="my_field",
+            content_type=self.content_type,
+            source_state=state1,
+            destination_state=state2,
+            priority=0
+        )
+        authorized_permission = PermissionObjectFactory()
+        approval_meta.permissions.add(authorized_permission)
+
+        TestModelObjectFactory()
+
+        available_approvals = TestModel.river.my_field.get_available_approvals(as_user=unauthorized_user)
+        assert_that(available_approvals.count(), equal_to(0))
+
+    def test_shouldReturnAnApprovalWhenUserIsAuthorizedWithAPermission(self):
+        authorized_permission = PermissionObjectFactory()
+        authorized_user = UserObjectFactory(user_permissions=[authorized_permission])
+
+        state1 = StateObjectFactory(label="state1")
+        state2 = StateObjectFactory(label="state2")
+
+        approval_meta = TransitionApprovalMetaFactory.create(
+            field_name="my_field",
+            content_type=self.content_type,
+            source_state=state1,
+            destination_state=state2,
+            priority=0
+        )
+        approval_meta.permissions.add(authorized_permission)
+
+        workflow_object = TestModelObjectFactory()
+
+        available_approvals = TestModel.river.my_field.get_available_approvals(as_user=authorized_user)
+        assert_that(available_approvals.count(), equal_to(1))
+        assert_that(list(available_approvals), has_item(
+            all_of(
+                has_property("workflow_object", workflow_object.model),
+                has_property("field_name", "my_field"),
+                has_property("source_state", state1),
+                has_property("destination_state", state2)
+            )
+        ))
+
+    def test_shouldReturnAnApprovalWhenUserIsAuthorizedWithAUserGroup(self):
+        content_type = ContentType.objects.get_for_model(TestModel)
+
+        authorized_user_group = GroupObjectFactory()
+        authorized_user = UserObjectFactory(groups=[authorized_user_group])
+
+        state1 = StateObjectFactory(label="state1")
+        state2 = StateObjectFactory(label="state2")
+
+        approval_meta = TransitionApprovalMetaFactory.create(
+            field_name="my_field",
+            content_type=content_type,
+            source_state=state1,
+            destination_state=state2,
+            priority=0
+        )
+        approval_meta.groups.add(authorized_user_group)
+
+        workflow_object = TestModelObjectFactory()
+
+        available_approvals = TestModel.river.my_field.get_available_approvals(as_user=authorized_user)
+        assert_that(available_approvals.count(), equal_to(1))
+        assert_that(list(available_approvals), has_item(
+            all_of(
+                has_property("workflow_object", workflow_object.model),
+                has_property("field_name", "my_field"),
+                has_property("source_state", state1),
+                has_property("destination_state", state2)
+            )
+        ))
+
+    def test_shouldReturnAnApprovalWhenUserIsAuthorizedAsTransactioner(self):
+        content_type = ContentType.objects.get_for_model(TestModel)
+
+        authorized_user = UserObjectFactory()
+
+        state1 = StateObjectFactory(label="state1")
+        state2 = StateObjectFactory(label="state2")
+
+        TransitionApprovalMetaFactory.create(
+            field_name="my_field",
+            content_type=content_type,
+            source_state=state1,
+            destination_state=state2,
+            priority=0
+        )
+
+        workflow_object = TestModelObjectFactory()
+
+        TransitionApproval.objects.filter(workflow_object=workflow_object.model).update(transactioner=authorized_user)
+
+        available_approvals = TestModel.river.my_field.get_available_approvals(as_user=authorized_user)
+        assert_that(available_approvals.count(), equal_to(1))
+        assert_that(list(available_approvals), has_item(
+            all_of(
+                has_property("workflow_object", workflow_object.model),
+                has_property("field_name", "my_field"),
+                has_property("source_state", state1),
+                has_property("destination_state", state2)
+            )
+        ))
+
+    def test__shouldReturnApprovalsOnTimeWhenTooManyWorkflowObject(self):
+        authorized_permission = PermissionObjectFactory()
+        authorized_user = UserObjectFactory(user_permissions=[authorized_permission])
+
+        state1 = StateObjectFactory(label="state1")
+        state2 = StateObjectFactory(label="state2")
+
+        approval_meta = TransitionApprovalMetaFactory.create(
+            field_name="my_field",
+            content_type=self.content_type,
+            source_state=state1,
+            destination_state=state2,
+            priority=0
+        )
+        approval_meta.permissions.add(authorized_permission)
+
+        self.objects = TestModelObjectFactory.create_batch(100)
+        before = datetime.now()
+        TestModel.river.my_field.get_on_approval_objects(as_user=authorized_user)
+        after = datetime.now()
+        assert_that(after - before, less_than(timedelta(milliseconds=100)))
+        print("Time taken %s" % str(after - before))
+
+    def test_shouldAssesInitialStateProperly(self):
+        content_type = ContentType.objects.get_for_model(TestModel)
+
+        state1 = StateObjectFactory(label="state1")
+        state2 = StateObjectFactory(label="state2")
+
+        TransitionApprovalMetaFactory.create(
+            field_name="my_field",
+            content_type=content_type,
+            source_state=state1,
+            destination_state=state2,
+            priority=0
+        )
+
+        assert_that(TestModel.river.my_field.initial_state, equal_to(state1))
+
+    def test_shouldAssesFinalStateProperlyWhenThereIsOnlyOne(self):
+        content_type = ContentType.objects.get_for_model(TestModel)
+
+        state1 = StateObjectFactory(label="state1")
+        state2 = StateObjectFactory(label="state2")
+
+        TransitionApprovalMetaFactory.create(
+            field_name="my_field",
+            content_type=content_type,
+            source_state=state1,
+            destination_state=state2,
+            priority=0
+        )
+        assert_that(TestModel.river.my_field.final_states.count(), equal_to(1))
+        assert_that(list(TestModel.river.my_field.final_states), has_item(state2))
+
+    def test_shouldAssesFinalStateProperlyWhenThereAreMultiple(self):
+        content_type = ContentType.objects.get_for_model(TestModel)
+
+        state1 = StateObjectFactory(label="state1")
+        state21 = StateObjectFactory(label="state21")
+        state22 = StateObjectFactory(label="state22")
+        state31 = StateObjectFactory(label="state31")
+        state32 = StateObjectFactory(label="state32")
+
+        TransitionApprovalMetaFactory.create(
+            field_name="my_field",
+            content_type=content_type,
+            source_state=state1,
+            destination_state=state21,
+            priority=0
+        )
+
+        TransitionApprovalMetaFactory.create(
+            field_name="my_field",
+            content_type=content_type,
+            source_state=state1,
+            destination_state=state22,
+            priority=0
+        )
+
+        TransitionApprovalMetaFactory.create(
+            field_name="my_field",
+            content_type=content_type,
+            source_state=state1,
+            destination_state=state31,
+            priority=0
+        )
+
+        TransitionApprovalMetaFactory.create(
+            field_name="my_field",
+            content_type=content_type,
+            source_state=state1,
+            destination_state=state32,
+            priority=0
+        )
+
+        assert_that(TestModel.river.my_field.final_states.count(), equal_to(4))
+        assert_that(list(TestModel.river.my_field.final_states), has_items(state21, state22, state31, state32))

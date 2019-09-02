@@ -1,6 +1,10 @@
 from datetime import datetime, timedelta
 
+from django.contrib.contenttypes.models import ContentType
+from hamcrest import assert_that, equal_to, has_item, has_property, all_of
+
 from river.models import TransitionApproval, APPROVED, TransitionApprovalMeta
+from river.models.factories import PermissionObjectFactory, UserObjectFactory, StateObjectFactory, TransitionApprovalMetaFactory
 from river.tests.base_test import BaseTestCase
 from river.tests.models.factories import TestModelObjectFactory
 from river.tests.models.testmodel import TestModel
@@ -10,24 +14,8 @@ from river.utils.exceptions import RiverException
 __author__ = 'ahmetdal'
 
 
+# noinspection PyMethodMayBeStatic
 class RiverTest(BaseTestCase):
-
-    def test_get_on_approval_objects(self):
-        self.initialize_standard_scenario()
-        objects = TestModelObjectFactory.create_batch(2)
-
-        on_approval_objects = TestModel.river.my_field.get_on_approval_objects(as_user=self.user1)
-        self.assertEqual(2, on_approval_objects.count())
-        self.assertEqual(objects[0], on_approval_objects[0])
-
-        on_approval_objects = TestModel.river.my_field.get_on_approval_objects(as_user=self.user2)
-        self.assertEqual(0, on_approval_objects.count())
-
-        on_approval_objects = TestModel.river.my_field.get_on_approval_objects(as_user=self.user3)
-        self.assertEqual(0, on_approval_objects.count())
-
-        on_approval_objects = TestModel.river.my_field.get_on_approval_objects(as_user=self.user4)
-        self.assertEqual(0, on_approval_objects.count())
 
     def test_get_available_states(self):
         self.initialize_standard_scenario()
@@ -48,113 +36,6 @@ class RiverTest(BaseTestCase):
 
         available_states = object.river.my_field.get_available_states(as_user=self.user4)
         self.assertEqual(0, available_states.count())
-
-    def test_get_initial_state(self):
-        self.initialize_standard_scenario()
-        self.assertEqual(self.state1, TestModel.river.my_field.initial_state)
-
-    def test_get_final_states(self):
-        self.initialize_standard_scenario()
-        self.assertListEqual([self.state41, self.state42, self.state51, self.state52], list(TestModel.river.my_field.final_states))
-
-    def test_get_waiting_transition_approvals_without_skip(self):
-        self.initialize_standard_scenario()
-        object = TestModelObjectFactory.create_batch(1)[0]
-
-        transition_approvals = object.river.my_field.get_available_approvals(as_user=self.user1)
-        self.assertEqual(1, transition_approvals.count())
-
-        transition_approvals = object.river.my_field.get_available_approvals(as_user=self.user2)
-        self.assertEqual(0, transition_approvals.count())
-
-        transition_approvals = object.river.my_field.get_available_approvals(as_user=self.user3)
-        self.assertEqual(0, transition_approvals.count())
-
-        transition_approvals = object.river.my_field.get_available_approvals(as_user=self.user4)
-        self.assertEqual(0, transition_approvals.count())
-
-    def test_get_waiting_transition_approvals_with_skip(self):
-        self.initialize_standard_scenario()
-        object = TestModelObjectFactory.create_batch(1)[0]
-
-        transition_approvals = object.river.my_field.get_available_approvals(as_user=self.user1)
-        self.assertEqual(1, transition_approvals.count())
-        self.assertEqual(self.state2, transition_approvals[0].destination_state)
-
-        TransitionApproval.objects.filter(
-            workflow_object=object,
-            field_name="my_field",
-            destination_state=self.state2
-        ).update(skip=True)
-
-        transition_approvals = object.river.my_field.get_available_approvals(as_user=self.user2)
-        self.assertEqual(1, transition_approvals.count())
-        self.assertEqual(self.state3, transition_approvals[0].destination_state)
-
-        TransitionApproval.objects.filter(
-            workflow_object=object,
-            field_name="my_field",
-            destination_state=self.state3
-        ).update(skip=True)
-
-        transition_approvals = object.river.my_field.get_available_approvals(as_user=self.user4)
-        self.assertEqual(2, transition_approvals.count())
-        self.assertEqual(self.state4, transition_approvals[0].destination_state)
-        self.assertEqual(self.state5, transition_approvals[1].destination_state)
-
-        TransitionApproval.objects.filter(
-            workflow_object=object,
-            field_name="my_field",
-            destination_state=self.state4
-        ).update(skip=True)
-
-        transition_approvals = object.river.my_field.get_available_approvals(as_user=self.user4)
-        self.assertEqual(3, transition_approvals.count())
-        self.assertEqual(self.state5, transition_approvals[0].destination_state)
-        self.assertEqual(self.state41, transition_approvals[1].destination_state)
-        self.assertEqual(self.state42, transition_approvals[2].destination_state)
-
-        TransitionApproval.objects.filter(
-            workflow_object=object,
-            field_name="my_field",
-            destination_state=self.state4
-        ).update(skip=False)
-
-        TransitionApproval.objects.filter(
-            workflow_object=object,
-            field_name="my_field",
-            destination_state=self.state5
-        ).update(skip=True)
-
-        transition_approvals = object.river.my_field.get_available_approvals(as_user=self.user4)
-        self.assertEqual(3, transition_approvals.count())
-        self.assertEqual(self.state4, transition_approvals[0].destination_state)
-        self.assertEqual(self.state51, transition_approvals[1].destination_state)
-        self.assertEqual(self.state52, transition_approvals[2].destination_state)
-
-        TransitionApproval.objects.filter(
-            workflow_object=object,
-            field_name="my_field",
-            destination_state__in=[self.state4, self.state5]
-        ).update(skip=True)
-
-        transition_approvals = object.river.my_field.get_available_approvals(as_user=self.user4)
-        self.assertEqual(4, transition_approvals.count())
-        self.assertEqual(self.state41, transition_approvals[0].destination_state)
-        self.assertEqual(self.state42, transition_approvals[1].destination_state)
-        self.assertEqual(self.state51, transition_approvals[2].destination_state)
-        self.assertEqual(self.state52, transition_approvals[3].destination_state)
-
-        TransitionApproval.objects.filter(
-            workflow_object=object,
-            field_name="my_field",
-            destination_state__in=[self.state41, self.state51]
-        ).update(skip=True)
-
-        transition_approvals = object.river.my_field.get_available_approvals(as_user=self.user4)
-        self.assertEqual(2, transition_approvals.count())
-        self.assertEqual(self.state42, transition_approvals[0].destination_state)
-        self.assertEqual(self.state52, transition_approvals[1].destination_state)
 
     def test_proceed(self):
         self.initialize_standard_scenario()
@@ -394,12 +275,3 @@ class RiverTest(BaseTestCase):
         # No Cycle for closed state.
         object.river.my_field.approve(as_user=self.user4, next_state=self.closed_state, god_mod=True)
         self.assertEqual(11, TransitionApproval.objects.filter(object_id=object.pk).count())
-
-    def test_get_waiting_approvals_slowness_test(self):
-        self.initialize_standard_scenario()
-        self.objects = TestModelObjectFactory.create_batch(100)
-        before = datetime.now()
-        for o in self.objects:
-            o.river.my_field.get_available_states(as_user=self.user1)
-        after = datetime.now()
-        self.assertLess(after - before, timedelta(seconds=2))

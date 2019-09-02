@@ -1,8 +1,8 @@
 import logging
 
-from django.contrib import auth
+import six
 from django.contrib.contenttypes.models import ContentType
-from django.db.models import Min, Q
+from django.db import transaction
 from django.db.transaction import atomic
 from django.utils import timezone
 
@@ -22,28 +22,42 @@ class InstanceWorkflowObject(object):
     def __init__(self, workflow_object, name, field_name):
         self.class_workflow = getattr(workflow_object.__class__.river, name)
         self.workflow_object = workflow_object
+        self.content_type = app_config.CONTENT_TYPE_CLASS.objects.get_for_model(self.workflow_object)
         self.name = name
         self.field_name = field_name
         self.initialized = False
 
+    def _to_key(self, source_state):
+        return str(self.content_type.pk) + self.field_name + source_state.label
+
+    @transaction.atomic
     def initialize_approvals(self):
         if not self.initialized and not TransitionApproval.objects.filter(workflow_object=self.workflow_object, field_name=self.name).count():
-            content_type = app_config.CONTENT_TYPE_CLASS.objects.get_for_model(self.workflow_object)
-            for transition_approval_meta in TransitionApprovalMeta.objects.filter(field_name=self.name, content_type=content_type):
-                transition_approval, created = TransitionApproval.objects.update_or_create(
-                    workflow_object=self.workflow_object,
-                    field_name=transition_approval_meta.field_name,
-                    source_state=transition_approval_meta.source_state,
-                    destination_state=transition_approval_meta.destination_state,
-                    priority=transition_approval_meta.priority,
-                    meta=transition_approval_meta,
-                    defaults={
-                        'status': PENDING,
-                    }
-                )
-                transition_approval.permissions.add(*transition_approval_meta.permissions.all())
-                transition_approval.groups.add(*transition_approval_meta.groups.all())
-            # self.workflow_object.save()
+            transition_approval_metas = TransitionApprovalMeta.objects.filter(field_name=self.name, content_type=self.content_type)
+
+            meta_dict = six.moves.reduce(lambda agg, meta: dict(agg, **{self._to_key(meta.source_state): agg.get(self._to_key(meta.source_state), []) + [meta]}), transition_approval_metas, {})
+
+            next_metas = meta_dict.get(self._to_key(self.class_workflow.initial_state), [])
+            while next_metas:
+                source_states = []
+                for next_meta in next_metas:
+
+                    transition_approval, created = TransitionApproval.objects.update_or_create(
+                        workflow_object=self.workflow_object,
+                        field_name=next_meta.field_name,
+                        source_state=next_meta.source_state,
+                        destination_state=next_meta.destination_state,
+                        priority=next_meta.priority,
+                        meta=next_meta,
+                        defaults={
+                            'status': PENDING,
+                        }
+                    )
+                    if created:
+                        source_states.append(next_meta.destination_state)
+                        transition_approval.permissions.add(*next_meta.permissions.all())
+                        transition_approval.groups.add(*next_meta.groups.all())
+                next_metas = [m for source_state in source_states for m in meta_dict.get(self._to_key(source_state), [])]
             self.initialized = True
             LOGGER.debug("Transition approvals are initialized for the workflow object %s" % self.workflow_object)
 
@@ -60,7 +74,28 @@ class InstanceWorkflowObject(object):
 
     @property
     def next_approvals(self):
-        return self._get_next_approvals()
+        return self._get_next_approvals(self.get_state())
+
+    def _get_next_approvals(self, source_state):
+        next_approvals = []
+        skipped_approvals = []
+        next_all_approvals = TransitionApproval.objects.filter(
+            content_type=self.content_type,
+            field_name=self.field_name,
+            object_id=self.workflow_object.pk,
+            source_state=source_state
+        )
+
+        for next_approval in next_all_approvals:
+            if not next_approval.skipped:
+                next_approvals.append(next_approval)
+            else:
+                skipped_approvals.append(next_approval)
+
+        for skipped_approval in skipped_approvals:
+            next_approvals.extend(self._get_next_approvals(skipped_approval.destination_state))
+
+        return next_approvals
 
     @property
     def recent_approval(self):
@@ -90,64 +125,12 @@ class InstanceWorkflowObject(object):
         destination_states = transition_approvals.values_list('destination_state', flat=True)
         return State.objects.filter(pk__in=destination_states)
 
-    def get_available_approvals(self, as_user=None, source_states=None, destination_state=None, god_mod=False):
-        def get_transition_approvals(transition_approvals):
-            min_priority = transition_approvals.aggregate(Min('priority'))['priority__min']
-            transition_approvals = transition_approvals.filter(priority=min_priority)
+    def get_available_approvals(self, as_user=None, destination_state=None, god_mod=False):
+        qs = self.class_workflow.get_available_approvals(as_user).filter(object_id=self.workflow_object.pk)
+        if destination_state:
+            qs = qs.filter(destination_state=destination_state)
 
-            if destination_state:
-                transition_approvals = transition_approvals.filter(destination_state=destination_state)
-
-            return transition_approvals
-
-        def authorize_transition_approvals(transition_approvals):
-            group_q = Q()
-            for g in as_user.groups.all():
-                group_q = group_q | Q(groups__in=[g])
-
-            permissions = []
-            for backend in auth.get_backends():
-                permissions.extend(backend.get_all_permissions(as_user))
-
-            permission_q = Q()
-            for p in permissions:
-                label, codename = p.split('.')
-                permission_q = permission_q | Q(permissions__content_type__app_label=label,
-                                                permissions__codename=codename)
-
-            return transition_approvals.filter(
-                (
-                        (Q(transactioner__isnull=True) | Q(transactioner=as_user)) &
-                        (Q(permissions__isnull=True) | permission_q) &
-                        (Q(groups__isnull=True) | group_q)
-                )
-            )
-
-        source_states = source_states or [self.get_state()]
-
-        transition_approvals = TransitionApproval.objects.filter(
-            workflow_object=self.workflow_object,
-            field_name=self.name,
-            source_state__in=source_states,
-            status=PENDING,
-            enabled=True
-        )
-
-        suitable_transition_approvals = get_transition_approvals(transition_approvals.filter(skip=False))
-
-        if as_user and not god_mod:
-            suitable_transition_approvals = authorize_transition_approvals(suitable_transition_approvals)
-
-        skipped_transition_approvals = get_transition_approvals(transition_approvals.filter(skip=True))
-        if skipped_transition_approvals:
-            source_state_pks = list(skipped_transition_approvals.values_list('destination_state', flat=True))
-            suitable_transition_approvals = suitable_transition_approvals | self.get_available_approvals(
-                as_user=as_user,
-                source_states=State.objects.filter(pk__in=source_state_pks),
-                destination_state=destination_state,
-                god_mod=god_mod
-            )
-        return suitable_transition_approvals
+        return qs
 
     @atomic
     def approve(self, as_user, next_state=None, god_mod=False):
@@ -200,30 +183,30 @@ class InstanceWorkflowObject(object):
         LOGGER.debug("Workflow object %s is proceeded for next transition. Transition: %s -> %s" % (
             self.workflow_object, previous_state, self.get_state()))
 
-    def _get_next_approvals(self, transition_approval_pks=None, current_states=None, index=0, limit=None):
-        if not transition_approval_pks:
-            transition_approval_pks = []
-        index += 1
-        current_states = list(current_states.values_list('pk', flat=True)) if current_states else [self.get_state()]
-        next_approvals = TransitionApproval.objects.filter(
-            workflow_object=self.workflow_object,
-            field_name=self.name,
-            source_state__in=current_states
-        )
-        if self.recent_approval:
-            next_approvals = next_approvals.exclude(pk=self.recent_approval.pk)
-        if next_approvals.exists() and not next_approvals.filter(pk__in=transition_approval_pks).exists() and (
-                not limit or index < limit):
-            proceedings = self._get_next_approvals(
-                transition_approval_pks=transition_approval_pks + list(next_approvals.values_list('pk', flat=True)),
-                current_states=State.objects.filter(pk__in=next_approvals.values_list('destination_state', flat=True)),
-                index=index,
-                limit=limit
-            )
-        else:
-            proceedings = TransitionApproval.objects.filter(pk__in=transition_approval_pks)
-
-        return proceedings
+    # def _get_next_approvals(self, transition_approval_pks=None, current_states=None, index=0, limit=None):
+    #     if not transition_approval_pks:
+    #         transition_approval_pks = []
+    #     index += 1
+    #     current_states = list(current_states.values_list('pk', flat=True)) if current_states else [self.get_state()]
+    #     next_approvals = TransitionApproval.objects.filter(
+    #         workflow_object=self.workflow_object,
+    #         field_name=self.name,
+    #         source_state__in=current_states
+    #     )
+    #     if self.recent_approval:
+    #         next_approvals = next_approvals.exclude(pk=self.recent_approval.pk)
+    #     if next_approvals.exists() and not next_approvals.filter(pk__in=transition_approval_pks).exists() and (
+    #             not limit or index < limit):
+    #         proceedings = self._get_next_approvals(
+    #             transition_approval_pks=transition_approval_pks + list(next_approvals.values_list('pk', flat=True)),
+    #             current_states=State.objects.filter(pk__in=next_approvals.values_list('destination_state', flat=True)),
+    #             index=index,
+    #             limit=limit
+    #         )
+    #     else:
+    #         proceedings = TransitionApproval.objects.filter(pk__in=transition_approval_pks)
+    #
+    #     return proceedings
 
     @atomic
     def _cycle_proceedings(self):

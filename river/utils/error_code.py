@@ -11,3 +11,5 @@ class ErrorCode(object):
 
     MULTIPLE_STATE_FIELDS = 7
     NO_STATE_FIELD = 8
+    ALREADY_SKIPPED = 9
+    ALREADY_NOT_SKIPPED = 10
