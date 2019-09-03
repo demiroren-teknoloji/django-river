@@ -3,7 +3,7 @@ import logging
 from django.db.models import CASCADE
 from mptt.fields import TreeOneToOneField
 
-from river.models import State, TransitionApprovalMeta
+from river.models import State, TransitionApprovalMeta, Workflow
 from river.utils.error_code import ErrorCode
 from river.utils.exceptions import RiverException
 
@@ -43,12 +43,13 @@ class TransitionApproval(BaseModel):
     objects = TransitionApprovalManager()
 
     content_type = models.ForeignKey(app_config.CONTENT_TYPE_CLASS, verbose_name=_('Content Type'), on_delete=CASCADE)
-    field_name = models.CharField(_("Field Name"), max_length=200)
 
     object_id = models.CharField(max_length=50, verbose_name=_('Related Object'))
     workflow_object = GenericForeignKey('content_type', 'object_id')
 
-    meta = models.ForeignKey(TransitionApprovalMeta, verbose_name=_('Meta'), related_name="proceedings", on_delete=CASCADE)
+    meta = models.ForeignKey(TransitionApprovalMeta, verbose_name=_('Meta'), related_name="transition_approvals", on_delete=CASCADE)
+    workflow = models.ForeignKey(Workflow, verbose_name=_("Workflow"), related_name='transition_approvals', on_delete=CASCADE)
+
     source_state = models.ForeignKey(State, verbose_name=_("Source State"), related_name='transition_approvals_as_source', on_delete=CASCADE)
     destination_state = models.ForeignKey(State, verbose_name=_("Next State"), related_name='transition_approvals_as_destination', on_delete=CASCADE)
 
@@ -76,53 +77,49 @@ class TransitionApproval(BaseModel):
         if self.skipped:
             LOGGER.info("TransitionApproval with id %s is already skipped.")
             return
-
         self.skipped = True
         self.save()
 
         if self._can_skip_whole_step:
-            for skipped_approval in self._all_skipped_at_same_layer:
-                for downstream_approval in self._downstream:
-                    transition_approval, created = TransitionApproval.objects.update_or_create(
-                        workflow_object=self.workflow_object,
-                        field_name=self.field_name,
-                        source_state=skipped_approval.source_state,
-                        destination_state=downstream_approval.destination_state,
-                        priority=self.priority,
-                        meta=self.meta,
-                        transactioner=downstream_approval.transactioner,
-                        status=PENDING
-                    )
-                    transition_approval.skipped_from.add(self)
-                    transition_approval.permissions.add(*downstream_approval.permissions.all())
-                    transition_approval.groups.add(*downstream_approval.groups.all())
-        self._downstream.update(skipped=True)
+            self._bind_with_downstream(self.source_state)
+            for skipped_peer in self.peers.filter(skipped=True):
+                self._bind_with_downstream(skipped_peer.source_state)
+
+        self.downstream.filter(skipped=False).update(skipped=True)
+
+    def _bind_with_downstream(self, source_state):
+        for downstream_approval in self.downstream.filter(skipped=False):
+            transition_approval, created = TransitionApproval.objects.update_or_create(
+                workflow_object=self.workflow_object,
+                workflow=self.workflow,
+                source_state=source_state,
+                destination_state=downstream_approval.destination_state,
+                priority=self.priority,
+                meta=self.meta,
+                transactioner=downstream_approval.transactioner,
+                status=PENDING
+            )
+            transition_approval.skipped_from.add(self)
+            transition_approval.permissions.add(*downstream_approval.permissions.all())
+            transition_approval.groups.add(*downstream_approval.groups.all())
 
     @property
-    def _downstream(self):
+    def peers(self):
         return TransitionApproval.objects.filter(
             workflow_object=self.workflow_object,
-            field_name=self.field_name,
-            source_state=self.destination_state,
-            skipped=False
-        )
-
-    @property
-    def _all_skipped_at_same_layer(self):
-        return TransitionApproval.objects.filter(
-            workflow_object=self.workflow_object,
-            field_name=self.field_name,
+            workflow=self.workflow,
             source_state=self.source_state,
-            destination_state=self.destination_state,
-            skipped=True,
+            destination_state=self.destination_state
+        ).exclude(pk=self.pk)
+
+    @property
+    def downstream(self):
+        return TransitionApproval.objects.filter(
+            workflow_object=self.workflow_object,
+            workflow=self.workflow,
+            source_state=self.destination_state,
         )
 
     @property
     def _can_skip_whole_step(self):
-        return TransitionApproval.objects.filter(
-            workflow_object=self.workflow_object,
-            field_name=self.field_name,
-            source_state=self.source_state,
-            destination_state=self.destination_state,
-            skipped=False
-        ).exclude(pk=self.pk).count() == 0
+        return self.peers.filter(skipped=False).count() == 0

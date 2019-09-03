@@ -70,7 +70,7 @@ def _post_save(sender, instance, created, *args, **kwargs):  # signal, sender, i
     for workflow in instance.river.all(instance.__class__):
         if created:
             workflow.initialize_approvals()
-        if not workflow.get_state():
+        if not workflow._get_state():
             init_state = getattr(instance.__class__.river, workflow.name).initial_state
-            workflow.set_state(init_state)
+            workflow._set_state(init_state)
             instance.save()

@@ -9,7 +9,7 @@ from django.utils import timezone
 from river.config import app_config
 from river.hooking.completed import PostCompletedHooking, PreCompletedHooking
 from river.hooking.transition import PostTransitionHooking, PreTransitionHooking
-from river.models import TransitionApproval, TransitionApprovalMeta, PENDING, State, APPROVED
+from river.models import TransitionApproval, PENDING, State, APPROVED, Workflow
 from river.signals import ProceedingSignal, TransitionSignal, FinalSignal
 from river.utils.error_code import ErrorCode
 from river.utils.exceptions import RiverException
@@ -27,103 +27,71 @@ class InstanceWorkflowObject(object):
         self.field_name = field_name
         self.initialized = False
 
-    def _to_key(self, source_state):
-        return str(self.content_type.pk) + self.field_name + source_state.label
-
     @transaction.atomic
     def initialize_approvals(self):
-        if not self.initialized and not TransitionApproval.objects.filter(workflow_object=self.workflow_object, field_name=self.name).count():
-            transition_approval_metas = TransitionApprovalMeta.objects.filter(field_name=self.name, content_type=self.content_type)
+        if not self.initialized:
+            workflow = Workflow.objects.filter(content_type=self.content_type, field_name=self.field_name).first()
+            if workflow and workflow.transition_approvals.count() == 0:
+                transition_approval_metas = workflow.transition_approval_metas.all()
+                meta_dict = six.moves.reduce(
+                    lambda agg, meta: dict(agg, **{self._to_key(meta.source_state): agg.get(self._to_key(meta.source_state), []) + [meta]}),
+                    transition_approval_metas,
+                    {})
 
-            meta_dict = six.moves.reduce(lambda agg, meta: dict(agg, **{self._to_key(meta.source_state): agg.get(self._to_key(meta.source_state), []) + [meta]}), transition_approval_metas, {})
+                next_metas = meta_dict.get(self._to_key(self.class_workflow.initial_state), [])
+                while next_metas:
+                    source_states = []
+                    for next_meta in next_metas:
 
-            next_metas = meta_dict.get(self._to_key(self.class_workflow.initial_state), [])
-            while next_metas:
-                source_states = []
-                for next_meta in next_metas:
-
-                    transition_approval, created = TransitionApproval.objects.update_or_create(
-                        workflow_object=self.workflow_object,
-                        field_name=next_meta.field_name,
-                        source_state=next_meta.source_state,
-                        destination_state=next_meta.destination_state,
-                        priority=next_meta.priority,
-                        meta=next_meta,
-                        defaults={
-                            'status': PENDING,
-                        }
-                    )
-                    if created:
-                        source_states.append(next_meta.destination_state)
-                        transition_approval.permissions.add(*next_meta.permissions.all())
-                        transition_approval.groups.add(*next_meta.groups.all())
-                next_metas = [m for source_state in source_states for m in meta_dict.get(self._to_key(source_state), [])]
-            self.initialized = True
-            LOGGER.debug("Transition approvals are initialized for the workflow object %s" % self.workflow_object)
+                        transition_approval, created = TransitionApproval.objects.update_or_create(
+                            workflow_object=self.workflow_object,
+                            source_state=next_meta.source_state,
+                            destination_state=next_meta.destination_state,
+                            priority=next_meta.priority,
+                            meta=next_meta,
+                            workflow=workflow,
+                            defaults={
+                                'status': PENDING,
+                            }
+                        )
+                        if created:
+                            source_states.append(next_meta.destination_state)
+                            transition_approval.permissions.add(*next_meta.permissions.all())
+                            transition_approval.groups.add(*next_meta.groups.all())
+                    next_metas = [m for source_state in source_states for m in meta_dict.get(self._to_key(source_state), [])]
+                self.initialized = True
+                LOGGER.debug("Transition approvals are initialized for the workflow object %s" % self.workflow_object)
 
     @property
     def on_initial_state(self):
-        return self.get_state() == self.class_workflow.initial_state
+        return self._get_state() == self.class_workflow.initial_state
 
     @property
     def on_final_state(self):
         if self.class_workflow.final_states.count() == 0:
             raise RiverException(ErrorCode.NO_AVAILABLE_FINAL_STATE, 'There is no available final state for the content type %s.' % self._content_type)
 
-        return self.get_state() in self.class_workflow.final_states
+        return self._get_state() in self.class_workflow.final_states
 
     @property
     def next_approvals(self):
-        return self._get_next_approvals(self.get_state())
-
-    def _get_next_approvals(self, source_state):
-        next_approvals = []
-        skipped_approvals = []
-        next_all_approvals = TransitionApproval.objects.filter(
+        return TransitionApproval.objects.filter(
             content_type=self.content_type,
             field_name=self.field_name,
             object_id=self.workflow_object.pk,
-            source_state=source_state
+            source_state=self._get_state()
         )
-
-        for next_approval in next_all_approvals:
-            if not next_approval.skipped:
-                next_approvals.append(next_approval)
-            else:
-                skipped_approvals.append(next_approval)
-
-        for skipped_approval in skipped_approvals:
-            next_approvals.extend(self._get_next_approvals(skipped_approval.destination_state))
-
-        return next_approvals
 
     @property
     def recent_approval(self):
         try:
-
             return getattr(self.workflow_object, self.name + "_transitions").filter(transaction_date__isnull=False).latest('transaction_date')
         except TransitionApproval.DoesNotExist:
             return None
 
-    @property
-    def _content_type(self):
-        return ContentType.objects.get_for_model(self.workflow_object)
-
-    # def get_available_transitions(self, as_user, *args, **kwargs):
-    # from river.services.proceeding import ProceedingService
-    # return ProceedingService.get_available_proceedings(self.workflow_object, [self.get_state()], user=as_user, *args, **kwargs)
-
     def get_available_states(self, as_user=None):
-        transition_approvals = TransitionApproval.objects.filter(
-            workflow_object=self.workflow_object,
-            source_state=self.get_state(),
-        )
-        if as_user:
-            transition_approvals = transition_approvals.filter(
-                permissions__in=as_user.user_permissions.all()
-            )
-        destination_states = transition_approvals.values_list('destination_state', flat=True)
-        return State.objects.filter(pk__in=destination_states)
+        all_destination_state_ids = self.get_available_approvals(as_user=as_user).values_list('destination_state', flat=True)
+        return State.objects.filter(pk__in=all_destination_state_ids)
 
     def get_available_approvals(self, as_user=None, destination_state=None, god_mod=False):
         qs = self.class_workflow.get_available_approvals(as_user).filter(object_id=self.workflow_object.pk)
@@ -134,87 +102,99 @@ class InstanceWorkflowObject(object):
 
     @atomic
     def approve(self, as_user, next_state=None, god_mod=False):
-        def process(action, next_state=None, god_mod=False):
-            available_transition_approvals = self.get_available_approvals(as_user=as_user, god_mod=god_mod)
-            c = available_transition_approvals.count()
-            if c == 0:
-                raise RiverException(ErrorCode.NO_AVAILABLE_NEXT_STATE_FOR_USER, "There is no available state for destination for the user.")
-            if c > 1:
-                if next_state:
-                    available_transition_approvals = available_transition_approvals.filter(destination_state=next_state)
-                    if available_transition_approvals.count() == 0:
-                        available_states = self.get_available_states(as_user=as_user)
-                        raise RiverException(ErrorCode.INVALID_NEXT_STATE_FOR_USER, "Invalid state is given(%s). Valid states is(are) %s" % (
-                            next_state.__str__(), ','.join([ast.__str__() for ast in available_states])))
-                else:
-                    raise RiverException(ErrorCode.NEXT_STATE_IS_REQUIRED,
-                                         "State must be given when there are multiple states for destination")
+        available_approvals = self.get_available_approvals(as_user=as_user)
+        number_of_available_approvals = available_approvals.count()
+        if number_of_available_approvals == 0:
+            raise RiverException(ErrorCode.NO_AVAILABLE_NEXT_STATE_FOR_USER, "There is no available approval for the user.")
+        elif next_state:
+            available_approvals = available_approvals.filter(destination_state=next_state)
+            if available_approvals.count() == 0:
+                available_states = self.get_available_states(as_user)
+                raise RiverException(ErrorCode.INVALID_NEXT_STATE_FOR_USER, "Invalid state is given(%s). Valid states is(are) %s" % (
+                    next_state.__str__(), ','.join([ast.__str__() for ast in available_states])))
+        elif number_of_available_approvals > 1 and not next_state:
+            raise RiverException(ErrorCode.NEXT_STATE_IS_REQUIRED, "State must be given when there are multiple states for destination")
 
-            available_transition_approval = available_transition_approvals[0]
-            available_transition_approval.status = action
-            available_transition_approval.transactioner = as_user
-            available_transition_approval.transaction_date = timezone.now()
-            if self.recent_approval:
-                available_transition_approval.previous = self.recent_approval
-            available_transition_approval.save()
+        approval = available_approvals.first()
+        approval.status = APPROVED
+        approval.transactioner = as_user
+        approval.transaction_date = timezone.now()
+        approval.previous = self.recent_approval
+        approval.save()
 
-            return available_transition_approval
+        has_transit = False
+        if approval.peers.filter(status=PENDING).count() == 0:
+            previous_state = self._get_state()
+            self._set_state(approval.destination_state)
+            has_transit = True
+            if self._check_if_it_cycled(approval.destination_state):
+                self._re_create_cycled_path(approval.destination_state)
+            LOGGER.debug("Workflow object %s is proceeded for next transition. Transition: %s -> %s" % (
+                self.workflow_object, previous_state, self._get_state()))
 
-        transition_approval = process(APPROVED, next_state, god_mod)
-
-        # Any other transitions approval is left?
-        rest_of_transition_approvals = self.get_available_approvals(destination_state=next_state, god_mod=True)
-
-        transition_status = False
-        previous_state = self.get_state()
-        if rest_of_transition_approvals.count() == 0:
-            self.set_state(transition_approval.destination_state)
-            transition_status = True
-
-            # Next states should be PENDING back again if there is circle.
-            self._cycle_proceedings()
-            # ProceedingService.get_next_proceedings(workflow_object).update(status=PENDING)
-
-        with ProceedingSignal(self.workflow_object, self.field_name, transition_approval), \
-             TransitionSignal(transition_status, self.workflow_object, self.field_name, transition_approval), \
+        with ProceedingSignal(self.workflow_object, self.field_name, approval), \
+             TransitionSignal(has_transit, self.workflow_object, self.field_name, approval), \
              FinalSignal(self.workflow_object, self.field_name):
             self.workflow_object.save()
 
-        LOGGER.debug("Workflow object %s is proceeded for next transition. Transition: %s -> %s" % (
-            self.workflow_object, previous_state, self.get_state()))
+    def hook_post_transition(self, callback, *args, **kwargs):
+        PostTransitionHooking.register(callback, self.workflow_object, self.field_name, *args, **kwargs)
 
-    # def _get_next_approvals(self, transition_approval_pks=None, current_states=None, index=0, limit=None):
-    #     if not transition_approval_pks:
-    #         transition_approval_pks = []
-    #     index += 1
-    #     current_states = list(current_states.values_list('pk', flat=True)) if current_states else [self.get_state()]
-    #     next_approvals = TransitionApproval.objects.filter(
-    #         workflow_object=self.workflow_object,
-    #         field_name=self.name,
-    #         source_state__in=current_states
-    #     )
-    #     if self.recent_approval:
-    #         next_approvals = next_approvals.exclude(pk=self.recent_approval.pk)
-    #     if next_approvals.exists() and not next_approvals.filter(pk__in=transition_approval_pks).exists() and (
-    #             not limit or index < limit):
-    #         proceedings = self._get_next_approvals(
-    #             transition_approval_pks=transition_approval_pks + list(next_approvals.values_list('pk', flat=True)),
-    #             current_states=State.objects.filter(pk__in=next_approvals.values_list('destination_state', flat=True)),
-    #             index=index,
-    #             limit=limit
-    #         )
-    #     else:
-    #         proceedings = TransitionApproval.objects.filter(pk__in=transition_approval_pks)
-    #
-    #     return proceedings
+    def hook_pre_transition(self, callback, *args, **kwargs):
+        PreTransitionHooking.register(callback, self.workflow_object, self.field_name, *args, **kwargs)
+
+    def hook_post_complete(self, callback):
+        PostCompletedHooking.register(callback, self.workflow_object, self.field_name)
+
+    def hook_pre_complete(self, callback):
+        PreCompletedHooking.register(callback, self.workflow_object, self.field_name)
+
+    @property
+    def _content_type(self):
+        return ContentType.objects.get_for_model(self.workflow_object)
+
+    def _to_key(self, source_state):
+        return str(self.content_type.pk) + self.field_name + source_state.label
+
+    def _check_if_it_cycled(self, new_state):
+        return TransitionApproval.objects.filter(
+            workflow_object=self.workflow_object,
+            workflow=self.class_workflow.workflow,
+            source_state=new_state,
+            status=APPROVED
+        ).count() > 0
+
+    def _re_create_cycled_path(self, from_state):
+        approvals = TransitionApproval.objects.filter(workflow_object=self.workflow_object, workflow=self.class_workflow.workflow, source_state=from_state)
+        cycle_ended = False
+        while not cycle_ended:
+            for old_approval in approvals:
+                if old_approval.enabled:
+                    TransitionApproval.objects.get_or_create(
+                        source_state=old_approval.source_state,
+                        destination_state=old_approval.destination_state,
+                        workflow=old_approval.workflow,
+                        object_id=old_approval.workflow_object.pk,
+                        content_type=old_approval.content_type,
+                        skipped=False,
+                        priority=old_approval.priority,
+                        enabled=True,
+                        status=PENDING,
+                        meta=old_approval.meta
+                    )
+            approvals = TransitionApproval.objects.filter(
+                workflow_object=self.workflow_object,
+                workflow=self.class_workflow.workflow,
+                source_state__in=approvals.values_list("destination_state", flat=TransitionApproval)
+            )
+            cycle_ended = approvals.filter(source_state=from_state).count() > 0
 
     @atomic
     def _cycle_proceedings(self):
         """
          Finds next proceedings and clone them for cycling if it exists.
         """
-        next_approvals = self._get_next_approvals().exclude(
-            status=PENDING).exclude(cloned=True)
+        next_approvals = self.next_approvals.exclude(status=PENDING).exclude(cloned=True)
         for ta in next_approvals:
             clone_transition_approval, c = TransitionApproval.objects.get_or_create(
                 source_state=ta.source_state,
@@ -236,20 +216,8 @@ class InstanceWorkflowObject(object):
 
         return True if next_approvals.count() else False
 
-    def get_state(self):
+    def _get_state(self):
         return getattr(self.workflow_object, self.field_name)
 
-    def set_state(self, state):
+    def _set_state(self, state):
         return setattr(self.workflow_object, self.field_name, state)
-
-    def hook_post_transition(self, callback, *args, **kwargs):
-        PostTransitionHooking.register(callback, self.workflow_object, self.field_name, *args, **kwargs)
-
-    def hook_pre_transition(self, callback, *args, **kwargs):
-        PreTransitionHooking.register(callback, self.workflow_object, self.field_name, *args, **kwargs)
-
-    def hook_post_complete(self, callback):
-        PostCompletedHooking.register(callback, self.workflow_object, self.field_name)
-
-    def hook_pre_complete(self, callback):
-        PreCompletedHooking.register(callback, self.workflow_object, self.field_name)

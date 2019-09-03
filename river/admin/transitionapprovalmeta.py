@@ -58,5 +58,8 @@ class TransitionApprovalMetaAdmin(admin.ModelAdmin):
         else:
             return "Class not found in the workspace"
 
+    def field_name(self, obj):
+        return obj.workflow.field_name
+
 
 admin.site.register(TransitionApprovalMeta, TransitionApprovalMetaAdmin)

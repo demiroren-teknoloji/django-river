@@ -100,7 +100,7 @@ class FinalSignal(object):
                 workflow_object=self.workflow_object,
                 field_name=self.field_name,
             )
-            LOGGER.debug("Pre final signal is sent for workflow object %s for final state %s" % (self.workflow_object, self.workflow.get_state().label))
+            LOGGER.debug("Pre final signal is sent for workflow object %s for final state %s" % (self.workflow_object, self.workflow._get_state().label))
 
     def __exit__(self, type, value, traceback):
         if self.status:
@@ -109,4 +109,4 @@ class FinalSignal(object):
                 workflow_object=self.workflow_object,
                 field_name=self.field_name,
             )
-            LOGGER.debug("Post final signal is sent for workflow object %s for final state %s" % (self.workflow_object, self.workflow.get_state().label))
+            LOGGER.debug("Post final signal is sent for workflow object %s for final state %s" % (self.workflow_object, self.workflow._get_state().label))

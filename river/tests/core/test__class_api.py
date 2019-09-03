@@ -5,7 +5,7 @@ from django.test import TestCase
 from hamcrest import assert_that, equal_to, has_item, all_of, has_property, less_than, has_items
 
 from river.models import TransitionApproval
-from river.models.factories import PermissionObjectFactory, UserObjectFactory, StateObjectFactory, TransitionApprovalMetaFactory, GroupObjectFactory
+from river.models.factories import PermissionObjectFactory, UserObjectFactory, StateObjectFactory, TransitionApprovalMetaFactory, GroupObjectFactory, WorkflowFactory
 from river.tests.models import TestModel
 from river.tests.models.factories import TestModelObjectFactory
 
@@ -23,15 +23,15 @@ class ClassApiTest(TestCase):
         state1 = StateObjectFactory(label="state1")
         state2 = StateObjectFactory(label="state2")
 
-        approval_meta = TransitionApprovalMetaFactory.create(
-            field_name="my_field",
-            content_type=self.content_type,
+        workflow = WorkflowFactory(initial_state=state1, content_type=self.content_type, field_name="my_field")
+        authorized_permission = PermissionObjectFactory()
+        TransitionApprovalMetaFactory.create(
+            workflow=workflow,
             source_state=state1,
             destination_state=state2,
-            priority=0
+            priority=0,
+            permissions=[authorized_permission]
         )
-        authorized_permission = PermissionObjectFactory()
-        approval_meta.permissions.add(authorized_permission)
 
         TestModelObjectFactory()
 
@@ -45,14 +45,15 @@ class ClassApiTest(TestCase):
         state1 = StateObjectFactory(label="state1")
         state2 = StateObjectFactory(label="state2")
 
-        approval_meta = TransitionApprovalMetaFactory.create(
-            field_name="my_field",
-            content_type=self.content_type,
+        workflow = WorkflowFactory(initial_state=state1, content_type=self.content_type, field_name="my_field")
+
+        TransitionApprovalMetaFactory.create(
+            workflow=workflow,
             source_state=state1,
             destination_state=state2,
-            priority=0
+            priority=0,
+            permissions=[authorized_permission]
         )
-        approval_meta.permissions.add(authorized_permission)
 
         workflow_object = TestModelObjectFactory()
 
@@ -61,24 +62,23 @@ class ClassApiTest(TestCase):
         assert_that(list(available_approvals), has_item(
             all_of(
                 has_property("workflow_object", workflow_object.model),
-                has_property("field_name", "my_field"),
+                has_property("workflow", workflow),
                 has_property("source_state", state1),
                 has_property("destination_state", state2)
             )
         ))
 
     def test_shouldReturnAnApprovalWhenUserIsAuthorizedWithAUserGroup(self):
-        content_type = ContentType.objects.get_for_model(TestModel)
-
         authorized_user_group = GroupObjectFactory()
         authorized_user = UserObjectFactory(groups=[authorized_user_group])
 
         state1 = StateObjectFactory(label="state1")
         state2 = StateObjectFactory(label="state2")
 
+        workflow = WorkflowFactory(initial_state=state1, content_type=self.content_type, field_name="my_field")
+
         approval_meta = TransitionApprovalMetaFactory.create(
-            field_name="my_field",
-            content_type=content_type,
+            workflow=workflow,
             source_state=state1,
             destination_state=state2,
             priority=0
@@ -92,23 +92,23 @@ class ClassApiTest(TestCase):
         assert_that(list(available_approvals), has_item(
             all_of(
                 has_property("workflow_object", workflow_object.model),
-                has_property("field_name", "my_field"),
+                has_property("workflow", workflow),
                 has_property("source_state", state1),
                 has_property("destination_state", state2)
             )
         ))
 
     def test_shouldReturnAnApprovalWhenUserIsAuthorizedAsTransactioner(self):
-        content_type = ContentType.objects.get_for_model(TestModel)
 
         authorized_user = UserObjectFactory()
 
         state1 = StateObjectFactory(label="state1")
         state2 = StateObjectFactory(label="state2")
 
+        workflow = WorkflowFactory(initial_state=state1, content_type=self.content_type, field_name="my_field")
+
         TransitionApprovalMetaFactory.create(
-            field_name="my_field",
-            content_type=content_type,
+            workflow=workflow,
             source_state=state1,
             destination_state=state2,
             priority=0
@@ -123,8 +123,7 @@ class ClassApiTest(TestCase):
         assert_that(list(available_approvals), has_item(
             all_of(
                 has_property("workflow_object", workflow_object.model),
-                has_property("field_name", "my_field"),
-                has_property("source_state", state1),
+                has_property("workflow", workflow),
                 has_property("destination_state", state2)
             )
         ))
@@ -136,14 +135,15 @@ class ClassApiTest(TestCase):
         state1 = StateObjectFactory(label="state1")
         state2 = StateObjectFactory(label="state2")
 
-        approval_meta = TransitionApprovalMetaFactory.create(
-            field_name="my_field",
-            content_type=self.content_type,
+        workflow = WorkflowFactory(initial_state=state1, content_type=self.content_type, field_name="my_field")
+
+        TransitionApprovalMetaFactory.create(
+            workflow=workflow,
             source_state=state1,
             destination_state=state2,
-            priority=0
+            priority=0,
+            permissions=[authorized_permission]
         )
-        approval_meta.permissions.add(authorized_permission)
 
         self.objects = TestModelObjectFactory.create_batch(100)
         before = datetime.now()
@@ -153,14 +153,14 @@ class ClassApiTest(TestCase):
         print("Time taken %s" % str(after - before))
 
     def test_shouldAssesInitialStateProperly(self):
-        content_type = ContentType.objects.get_for_model(TestModel)
 
         state1 = StateObjectFactory(label="state1")
         state2 = StateObjectFactory(label="state2")
 
+        workflow = WorkflowFactory(initial_state=state1, content_type=self.content_type, field_name="my_field")
+
         TransitionApprovalMetaFactory.create(
-            field_name="my_field",
-            content_type=content_type,
+            workflow=workflow,
             source_state=state1,
             destination_state=state2,
             priority=0
@@ -169,14 +169,14 @@ class ClassApiTest(TestCase):
         assert_that(TestModel.river.my_field.initial_state, equal_to(state1))
 
     def test_shouldAssesFinalStateProperlyWhenThereIsOnlyOne(self):
-        content_type = ContentType.objects.get_for_model(TestModel)
 
         state1 = StateObjectFactory(label="state1")
         state2 = StateObjectFactory(label="state2")
 
+        workflow = WorkflowFactory(initial_state=state1, content_type=self.content_type, field_name="my_field")
+
         TransitionApprovalMetaFactory.create(
-            field_name="my_field",
-            content_type=content_type,
+            workflow=workflow,
             source_state=state1,
             destination_state=state2,
             priority=0
@@ -185,7 +185,6 @@ class ClassApiTest(TestCase):
         assert_that(list(TestModel.river.my_field.final_states), has_item(state2))
 
     def test_shouldAssesFinalStateProperlyWhenThereAreMultiple(self):
-        content_type = ContentType.objects.get_for_model(TestModel)
 
         state1 = StateObjectFactory(label="state1")
         state21 = StateObjectFactory(label="state21")
@@ -193,33 +192,31 @@ class ClassApiTest(TestCase):
         state31 = StateObjectFactory(label="state31")
         state32 = StateObjectFactory(label="state32")
 
+        workflow = WorkflowFactory(initial_state=state1, content_type=self.content_type, field_name="my_field")
+
         TransitionApprovalMetaFactory.create(
-            field_name="my_field",
-            content_type=content_type,
+            workflow=workflow,
             source_state=state1,
             destination_state=state21,
             priority=0
         )
 
         TransitionApprovalMetaFactory.create(
-            field_name="my_field",
-            content_type=content_type,
+            workflow=workflow,
             source_state=state1,
             destination_state=state22,
             priority=0
         )
 
         TransitionApprovalMetaFactory.create(
-            field_name="my_field",
-            content_type=content_type,
+            workflow=workflow,
             source_state=state1,
             destination_state=state31,
             priority=0
         )
 
         TransitionApprovalMetaFactory.create(
-            field_name="my_field",
-            content_type=content_type,
+            workflow=workflow,
             source_state=state1,
             destination_state=state32,
             priority=0
