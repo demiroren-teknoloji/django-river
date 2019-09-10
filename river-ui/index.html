@@ -1,9 +1,24 @@
 <html>
 
 <head>
-    <script src="https://cdn.jsdelivr.net/npm/vue/dist/vue.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/5.12.0/d3.js"></script>
     <script src="https://dagrejs.github.io/project/dagre-d3/latest/dagre-d3.min.js"></script>
+    <script src="https://unpkg.com/vue-multiselect@2.1.0"></script>
+
+    <script src="https://unpkg.com/vue"></script>
+    <script src="https://unpkg.com/vue-material"></script>
+
+
+    <link rel="stylesheet"
+        href="https://fonts.googleapis.com/css?family=Roboto:300,400,500,700,400italic|Material+Icons">
+    <link rel="stylesheet" href="https://unpkg.com/vue-material/dist/vue-material.min.css">
+    <link rel="stylesheet" href="https://unpkg.com/vue-material/dist/theme/default.css">
+    <link rel="stylesheet"
+        href="https://fonts.googleapis.com/css?family=Roboto:300,400,500,700,400italic|Material+Icons">
+    <link rel="stylesheet" href="https://unpkg.com/vue-material/dist/vue-material.min.css">
+    <link rel="stylesheet" href="https://unpkg.com/vue-material/dist/theme/default.css">
+    <link rel="stylesheet" href="https://unpkg.com/vue-multiselect@2.1.0/dist/vue-multiselect.min.css">
+
     <style>
         g.type-SELECTED>rect {
             fill: #00ffd0;
@@ -30,18 +45,118 @@
             stroke-width: 1.5px;
         }
 
+        #sketch {
+            padding-left: 5%;
+        }
+
         svg {
-            margin-left: 5%;
             border-style: solid;
+        }
+
+        #app {
+            padding-top: 50px;
         }
     </style>
 </head>
 
 <body>
     <div id="app">
-        <div id="sketch"></div>
-        <div id="input">
-            <button v-on:click="add">Add</button>
+        <div class="md-layout md-gutter md-alignment-start">
+            <div v-if="!sketchRoot" class="md-layout-item md-medium-size-100 md-small-size-100 md-xsmall-size-100">
+                <md-empty-state md-icon="account_tree" md-label="Create your initial state"
+                    md-description="Creating your initial state, you'll be able to start designing your workflow.">
+
+                    <md-field>
+                        <label>Initial Name: </label>
+                        <md-input v-model="initialStateName"></md-input>
+                        <md-button class="md-raised md-primary" v-on:click="initializeSketch">Create</md-button>
+                    </md-field>
+                </md-empty-state>
+            </div>
+            <div class="md-layout md-gutter md-alignment-start" v-else>
+                <div id="sketch" class="md-layout-item md-medium-size-70 md-small-size-100 md-xsmall-size-100">
+                    <div id="sketch-input-container">
+                        <div style="width: 650px" v-if="sketchRoot && Object.keys(sketchRoot.childs).length != 0">
+                            <md-field>
+                                <label>New state name from "{{ selectedNode.name }}": </label>
+                                <md-input v-model="newStateName"></md-input>
+                                <md-button class="md-raised md-primary" v-on:click="createState">Create</md-button>
+                            </md-field>
+                        </div>
+                    </div>
+                </div>
+                <div id="input" class="md-layout-item md-medium-size-30 md-small-size-100 md-xsmall-size-100">
+                    <div class="container">
+                        <div v-if="selectedNode && selectedNode.parent">
+                            <div>
+                                <label>Source State: </label>
+                                <md-chip>{{ selectedNode.parent.name }}</md-chip>
+                            </div>
+
+                            <div>
+                                <label>Destination State: </label>
+                                <md-chip>{{ selectedNode.name }}</md-chip>
+                            </div>
+
+                            <md-field>
+                                <label>Priority: </label>
+                                <md-input v-model="newApproval.priority" type="number"></md-input>
+                            </md-field>
+
+                            <div>
+                                <label for="permissions">Permissions: </label>
+                                <div class="col-75">
+                                    <multiselect v-model="newApproval.permissions" :options="availablePermissions"
+                                        :multiple="true" :close-on-select="false" :clear-on-select="true"
+                                        :preserve-search="true" placeholder="Pick permission(s)" label="name"
+                                        track-by="name">
+                                        <template slot="selection" slot-scope="{ values, search, isOpen }"><span
+                                                class="multiselect__single"
+                                                v-if="newApproval.permissions.length &amp;&amp; !isOpen">{{ newApproval.permissions.length }}
+                                                options
+                                                selected</span></template>
+                                    </multiselect>
+                                </div>
+                            </div>
+
+                            <div>
+                                <label for="permissions">Groups: </label>
+
+                                <multiselect v-model="newApproval.groups" :options="availableGroups" :multiple="true"
+                                    :close-on-select="false" :clear-on-select="true" :preserve-search="true"
+                                    placeholder="Pick group(s)" label="name" track-by="name">
+                                    <template slot="selection" slot-scope="{ values, search, isOpen }"><span
+                                            class="multiselect__single"
+                                            v-if="newApproval.groups.length &amp;&amp; !isOpen">{{ newApproval.groups.length }}
+                                            options
+                                            selected</span></template>
+                                </multiselect>
+                            </div>
+                            <div>
+                                <md-button class="md-raised md-primary">Create Approval</md-button>
+                            </div>
+                        </div>
+                        <div v-else-if="sketchRoot && Object.keys(sketchRoot.childs).length == 0">
+
+                            <md-empty-state md-icon="account_tree" md-label="Create your second state"
+                                md-description="Creating your first state, you'll be able to start configuring your first transition.">
+
+                                <md-field>
+                                    <label>Second state name from "{{ selectedNode.name }}": </label>
+                                    <md-input v-model="newStateName"></md-input>
+                                    <md-button class="md-raised md-primary" v-on:click="createState">Create</md-button>
+                                </md-field>
+                            </md-empty-state>
+                        </div>
+                        <div v-else>
+                            <md-empty-state md-icon="mouse" md-label="Select a non-root state"
+                                md-description="Selecting a non-root state, you'll be able to create approvals and configure them.">
+                            </md-empty-state>
+                        </div>
+                    </div>
+
+                </div>
+            </div>
         </div>
     </div>
 
@@ -52,6 +167,7 @@
                 this.name = name
                 this.parent = parent
                 this.childs = {}
+                this.approvals = {}
                 if (this.parent) {
                     this.parent.addChild(this)
                 }
@@ -61,25 +177,26 @@
                 this.childs[node.id] = node
             }
 
-            equals(other) {
-                var thisChildIds = Object.keys(this.childs)
-                var otherChildIds = Object.keys(other.childs)
-                return this.id == other.id
-                    &&
-                    (
-                        (thisChildIds.length == 0 && otherChildIds.length == 0) ||
-                        (thisChildIds.length == otherChildIds.length
-                            && thisChildIds.every(function (childId) {
-                                return childId in other.childs && this.childs[childId].equals(other.childs[childId])
-                            })
-                        )
-                    )
+            addApprovals(approval) {
+                this.approvals[approval.id] = approval
             }
         }
 
+        class Approval {
+            constructor() {
+                this.id = undefined
+                this.permissions = []
+                this.groups = []
+                this.priority = 0
+            }
+        }
+
+        Vue.use(VueMaterial.default)
+        Vue.component('multiselect', window.VueMultiselect.default)
         var app = new Vue({
             el: '#app',
             data: {
+                initialStateName: undefined,
                 sketchRoot: undefined,
                 nodeIndexMapping: {
 
@@ -87,51 +204,89 @@
                 nodeMapping: {
 
                 },
-                selectedNode: undefined
-            },
-            mounted: function () {
-                this.svg = d3.select("#sketch")
-                    .append('svg')
-                    .attr('width', 500)
-                    .attr('height', 270);
+                selectedNode: undefined,
+                selectedPermissions: [],
+                selectedGroups: [],
 
+                newApproval: new Approval(),
+                newStateName: undefined,
 
-                this._initializeSketch()
+                availablePermissions: [
+                    { name: 'ticket.start-working' },
+                    { name: 'ticket.resolve' },
+                    { name: 'ticket.re-open' },
+                    { name: 'ticket.close' },
+                ],
+                availableGroups: [
+                    { name: 'Team Leader' },
+                    { name: 'Developer' },
+                ]
             },
 
             methods: {
-                add() {
-                    var newNode = new Node("Node 2 asda dasdads ad as", this.selectedNode)
-                    this._renderSketch()
-                },
-                _createNode(node, index) {
-                    this.nodeMapping[node.id] = node
-                    this.nodeIndexMapping[node.id] = index
-                    this.graph.setNode(index, { label: node.name, class: "type-UNSELECTED", id: node.id });
-                    if (node.parent) {
-                        console.log([this._getNodeIndex(node.parent), index])
-                        this.graph.setEdge(this._getNodeIndex(node.parent), index);
+                createState() {
+                    var existingNewState = this._exists(this.newStateName)
+                    if (!existingNewState) {
+                        var newNode = new Node(this.newStateName, this.selectedNode)
+                        this._renderSketch()
+                        this.newStateName = undefined
+                        this._unselectNode()
+                        this.selectedNode = newNode
+                        this._selectNode()
+                        return newNode
+                    } else {
+                        this.selectedNode.addChild(existingNewState)
+                        this._renderSketch()
+                        this.newStateName = undefined
+                        return existingNewState
                     }
                 },
-                _initializeSketch() {
-                    this.graph = new dagreD3.graphlib.Graph()
-                        .setGraph({})
-                        .setDefaultEdgeLabel(function () { return {}; });
-
-                    var render = new dagreD3.render();
-
-                    // Set up an SVG group so that we can translate the final graph.
-                    this.svg = d3.select("svg")
-                    this.svgGroup = this.svg.append("g");
-
-                    this.sketchRoot = new Node("Initial", undefined)
+                initializeSketch() {
+                    this.sketchRoot = new Node(this.initialStateName, undefined)
                     this.selectedNode = this.sketchRoot
-                    this._renderSketch()
+                    Vue.nextTick(() => {
+                        this.svg = d3.select("#sketch")
+                            .insert('svg', "#sketch-input-container")
+                            .attr('width', 650)
+                            .attr('height', 270);
+
+                        this.graph = new dagreD3.graphlib.Graph()
+                            .setGraph({})
+                            .setDefaultEdgeLabel(function () { return {}; });
+
+                        var render = new dagreD3.render();
+
+                        // Set up an SVG group so that we can translate the final graph.
+                        this.svg = d3.select("svg")
+                        this.svgGroup = this.svg.append("g");
+
+                        this._renderSketch()
+                    });
 
                     // Run the renderer. This is what draws the final graph.
 
                 },
-                _destroySketchComponents(){
+
+                _exists(stateName) {
+                    var thisApp = this
+                    var existingNodeId = Object.keys(this.nodeMapping).find(function (nodeId) {
+                        var node = thisApp.nodeMapping[nodeId]
+                        return node.name == stateName
+                    })
+                    return existingNodeId ? this.nodeMapping[existingNodeId] : undefined
+                },
+
+                _createNode(node, index) {
+                    this.nodeMapping[node.id] = node
+                    this.nodeIndexMapping[node.id] = index
+                    this.graph.setNode(index, { label: node.name, class: "type-UNSELECTED", id: node.id });
+                },
+
+                _createEdge(fromNode, toNode) {
+                    this.graph.setEdge(this._getNodeIndex(fromNode), this._getNodeIndex(toNode));
+                },
+
+                _destroySketchComponents() {
                     var g = this.graph
                     this.graph.nodes().forEach(function (v) {
                         g.removeNode(v);
@@ -141,30 +296,36 @@
                         g.removeEdge(v);
                     });
                 },
+                _renderLayer(node, index, processedNodeIds) {
+                    var indexIncrease = 0
+                    if (!processedNodeIds.includes(node.id)) {
+                        processedNodeIds.push(node.id)
+                        var thisApp = this
+                        Object.keys(node.childs).forEach(function (childId) {
+                            var child = node.childs[childId]
+                            if (child) {
+                                if (!processedNodeIds.includes(child.id)) {
+                                    thisApp._createNode(child, index)
+                                    indexIncrease++
+                                    index++
+                                }
+                                thisApp._createEdge(node, child)
+
+                                indexIncrease += thisApp._renderLayer(child, index, processedNodeIds)
+                                index += indexIncrease
+                            }
+                        })
+
+                    }
+                    return indexIncrease
+
+                },
                 _renderSketch() {
                     if (this.sketchRoot) {
                         this._destroySketchComponents()
-                        this._createNode(this.sketchRoot, 0)
-                        // this.graph.setNode(0, { label: this.sketchRoot.name, class: "type-TK", id: this.sketchRoot.id });
-                        // this.nodeIndexMapping[this.sketchRoot.id] = 0
-                        var childs = this.sketchRoot.childs
-                        var childIds = Object.keys(childs)
-                        var index = 1
-                        while (childIds.length > 0) {
-                            newChilds = {}
-                            var thisApp = this
-                            childIds.forEach(function (childId) {
-                                var child = childs[childId]
-                                if (child) {
-                                    thisApp._createNode(child, index)
-                                    newChilds = { ...newChilds, ...child.childs }
-                                    index++
-                                }
-                            })
-                            childs = newChilds
-                            childIds = Object.keys(childs)
-                        }
 
+                        this._createNode(this.sketchRoot, 0)
+                        this._renderLayer(this.sketchRoot, 1, [])
 
                         this._roundNodeCorners()
 
@@ -186,7 +347,7 @@
                         })
                     })
                 },
-                _selectNode(nodeId) {
+                _selectNode() {
                     d3.select('g#' + this.selectedNode.id).classed('type-UNSELECTED', false).classed('type-SELECTED', true)
 
                 },
