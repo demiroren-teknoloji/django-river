@@ -402,6 +402,7 @@
                         var sourceNode = thisApp.nodeMapping[indexNodeMapping[sourceNodeIndex]]
                         var targetNode = thisApp.nodeMapping[indexNodeMapping[targetNodeIndex]]
                         var path = d3.select(edgeG).select("path")
+                        // Make it easier to click by adding a transparent wider path
                         d3.select(edgeG).append("path")
                             .attr("d", d3.select(edgeG).select("path").attr("d"))
                             .classed("clickable-edge", true)
