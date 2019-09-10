@@ -20,11 +20,31 @@
     <link rel="stylesheet" href="https://unpkg.com/vue-multiselect@2.1.0/dist/vue-multiselect.min.css">
 
     <style>
-        g.type-SELECTED>rect {
+        g.node-SELECTED>rect {
             fill: #00ffd0;
         }
 
-        g.type-UNSELECTED>rect {
+        g.node-UNSELECTED>rect {
+            fill: #dddd;
+        }
+
+        g.edge-SELECTED>path.path {
+            stroke: #ff5252;
+            stroke-width: 2;
+        }
+
+        g.edge-UNSELECTED>path.path {
+            stroke: #000;
+            stroke-width: 1.5px;
+        }
+
+        .clickable-edge {
+            stroke-width: 25px !important;
+            opacity: 0 !important;
+        }
+
+
+        g.edge-UNSELECTED>path {
             fill: #dddd;
         }
 
@@ -75,10 +95,24 @@
                 </md-empty-state>
             </div>
             <div class="md-layout md-gutter md-alignment-start" v-else>
-                <div id="sketch" class="md-layout-item md-medium-size-70 md-small-size-100 md-xsmall-size-100">
+                <div v-if="selectedNode" id="sketch"
+                    class="md-layout-item md-medium-size-70 md-small-size-100 md-xsmall-size-100">
                     <md-card>
                         <md-card-content>
-                            <svg width="650" height="270"></svg>
+                            <svg width="650" height="270">
+                                <defs>
+                                    <filter id="glow">
+                                        <fegaussianblur class="blur" result="coloredBlur" stddeviation="4">
+                                        </fegaussianblur>
+                                        <femerge>
+                                            <femergenode in="coloredBlur"></femergenode>
+                                            <femergenode in="coloredBlur"></femergenode>
+                                            <femergenode in="coloredBlur"></femergenode>
+                                            <femergenode in="SourceGraphic"></femergenode>
+                                        </femerge>
+                                    </filter>
+                                </defs>
+                            </svg>
                             <div v-if="sketchRoot && Object.keys(sketchRoot.childs).length != 0">
                                 <md-field>
                                     <label>New state name from "{{ selectedNode.name }}": </label>
@@ -91,17 +125,17 @@
                 </div>
                 <div id="input" class="md-layout-item md-medium-size-30 md-small-size-100 md-xsmall-size-100">
                     <div class="container">
-                        <div v-if="selectedNode && selectedNode.parent">
+                        <div v-if="selectedEdge">
                             <md-card>
                                 <md-card-content>
                                     <div class="md-field md-has-value">
                                         <label>Source State: </label>
-                                        <md-chip>{{ selectedNode.parent.name }}</md-chip>
+                                        <md-chip>{{ selectedEdge.sourceNode.name }}</md-chip>
                                     </div>
 
                                     <div class="md-field md-has-value">
                                         <label>Destination State: </label>
-                                        <md-chip>{{ selectedNode.name }}</md-chip>
+                                        <md-chip>{{ selectedEdge.targetNode.name }}</md-chip>
                                     </div>
 
                                     <md-field class="md-field md-has-value">
@@ -158,8 +192,8 @@
                             </md-empty-state>
                         </div>
                         <div v-else>
-                            <md-empty-state md-icon="mouse" md-label="Select a non-root state"
-                                md-description="Selecting a non-root state, you'll be able to create approvals and configure them.">
+                            <md-empty-state md-icon="mouse" md-label="Select a transition"
+                                md-description="Selecting a transition by clicking the arrow, you'll be able to create approvals and configure them.">
                             </md-empty-state>
                         </div>
                     </div>
@@ -170,6 +204,16 @@
     </div>
 
     <script>
+
+        class Edge {
+            constructor(sourceNode, targetNode, elem) {
+                this.sourceNode = sourceNode
+                this.targetNode = targetNode
+                this.elem = elem
+                this.id = sourceNode.id + "+" + targetNode.id
+            }
+        }
+
         class Node {
             constructor(name, parent) {
                 this.id = '_' + Math.random().toString(36).substr(2, 9);
@@ -213,6 +257,7 @@
                 nodeMapping: {
 
                 },
+                selectedEdge: undefined,
                 selectedNode: undefined,
                 selectedPermissions: [],
                 selectedGroups: [],
@@ -237,6 +282,7 @@
                     var existingNewState = this._exists(this.newStateName)
                     if (!existingNewState) {
                         var newNode = new Node(this.newStateName, this.selectedNode)
+                        var newEdge = new Edge(this.selectedNode, newNode)
                         this._renderSketch()
                         this.newStateName = undefined
                         this._unselectNode()
@@ -285,7 +331,7 @@
                 _createNode(node, index) {
                     this.nodeMapping[node.id] = node
                     this.nodeIndexMapping[node.id] = index
-                    this.graph.setNode(index, { label: node.name, class: "type-UNSELECTED", id: node.id });
+                    this.graph.setNode(index, { label: node.name, class: "node-UNSELECTED", id: node.id });
                 },
 
                 _createEdge(fromNode, toNode) {
@@ -345,6 +391,26 @@
                 },
                 _setOnclicks() {
                     var thisApp = this
+                    var allEdgeG = d3.select("g.edgePaths").selectAll("g.edgePath").nodes()
+                    allEdgeG.forEach(function (edgeG, index) {
+                        var edgeFromGraph = thisApp.graph.edges()[index]
+                        var sourceNodeIndex = edgeFromGraph.v
+                        var targetNodeIndex = edgeFromGraph.w
+                        var indexNodeMapping = Object.keys(thisApp.nodeIndexMapping)
+                            .reduce((obj, key) => Object.assign({}, obj, { [thisApp.nodeIndexMapping[key]]: key }), {});
+
+                        var sourceNode = thisApp.nodeMapping[indexNodeMapping[sourceNodeIndex]]
+                        var targetNode = thisApp.nodeMapping[indexNodeMapping[targetNodeIndex]]
+                        var path = d3.select(edgeG).select("path")
+                        d3.select(edgeG).append("path")
+                            .attr("d", d3.select(edgeG).select("path").attr("d"))
+                            .classed("clickable-edge", true)
+                            .on("click", function () {
+                                thisApp._unselectEdge()
+                                thisApp.selectedEdge = new Edge(sourceNode, targetNode, edgeG)
+                                thisApp._selectEdge()
+                            })
+                    })
                     Object.keys(this.nodeMapping).forEach(function (nodeId) {
                         d3.select("g#" + nodeId + " rect").on("click", function () {
                             thisApp._unselectNode()
@@ -354,12 +420,19 @@
                     })
                 },
                 _selectNode() {
-                    d3.select('g#' + this.selectedNode.id).classed('type-UNSELECTED', false).classed('type-SELECTED', true)
-
+                    d3.select('g#' + this.selectedNode.id).classed('node-UNSELECTED', false).classed('node-SELECTED', true)
                 },
                 _unselectNode() {
                     if (this.selectedNode) {
-                        d3.select('g#' + this.selectedNode.id).classed('type-SELECTED', false).classed('type-UNSELECTED', true)
+                        d3.select('g#' + this.selectedNode.id).classed('node-SELECTED', false).classed('node-UNSELECTED', true)
+                    }
+                },
+                _selectEdge() {
+                    d3.select(this.selectedEdge.elem).classed("edge-SELECTED", true).classed('edge-UNSELECTED', false)
+                },
+                _unselectEdge() {
+                    if (this.selectedEdge) {
+                        d3.select(this.selectedEdge.elem).classed("edge-SELECTED", false).classed('edge-UNSELECTED', true)
                     }
                 },
                 _getNodeIndex(node) {
