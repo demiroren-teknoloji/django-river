@@ -99,20 +99,7 @@
                     class="md-layout-item md-medium-size-70 md-small-size-100 md-xsmall-size-100">
                     <md-card>
                         <md-card-content>
-                            <svg width="650" height="270">
-                                <defs>
-                                    <filter id="glow">
-                                        <fegaussianblur class="blur" result="coloredBlur" stddeviation="4">
-                                        </fegaussianblur>
-                                        <femerge>
-                                            <femergenode in="coloredBlur"></femergenode>
-                                            <femergenode in="coloredBlur"></femergenode>
-                                            <femergenode in="coloredBlur"></femergenode>
-                                            <femergenode in="SourceGraphic"></femergenode>
-                                        </femerge>
-                                    </filter>
-                                </defs>
-                            </svg>
+                            <svg width="650" height="270"></svg>
                             <div v-if="sketchRoot && Object.keys(sketchRoot.childs).length != 0">
                                 <md-field>
                                     <label>New state name from "{{ selectedNode.name }}": </label>
@@ -127,6 +114,44 @@
                     <div class="container">
                         <div v-if="selectedEdge">
                             <md-card>
+                                <md-card-header>
+                                    <div class="md-title">Approvals rules from <md-chip>{{ selectedEdge.sourceNode.name }}</md-chip> to <md-chip>{{ selectedEdge.targetNode.name }}</md-chip></div>
+                                </md-card-header>
+                                <md-card-content>
+                                    <div v-if="selectedEdge.approvals.length==0">
+                                        No approval created yet
+                                    </div>
+                                    <md-list v-else :md-expand-single="true">
+                                        <md-list-item md-expand v-for="(approval,index) in selectedEdge.approvals">
+                                            <md-icon>done_all</md-icon>
+                                            <span class="md-list-item-text">Approval Rule {{ index + 1  }}</span>
+
+                                            <md-list slot="md-expand">
+                                                <md-list-item class="md-inset">
+                                                    <label>Permissions: </label>
+                                                    <md-chip class="md-primary"
+                                                        v-for="permission in approval.permissions">{{ permission.name}}
+                                                    </md-chip>
+                                                </md-list-item>
+                                                <md-list-item class="md-inset">
+                                                    <label>Groups: </label>
+                                                    <md-chip class="md-primary" v-for="group in approval.groups">
+                                                        {{ group.name}}
+                                                    </md-chip>
+                                                </md-list-item>
+                                                <md-list-item class="md-inset">
+                                                    <label>Priority: </label>
+                                                    {{ approval.priority }}
+                                                </md-list-item>
+                                            </md-list>
+                                        </md-list-item>
+                                    </md-list>
+                                </md-card-content>
+                            </md-card>
+                            <md-card>
+                                <md-card-header>
+                                    <div class="md-title">Approval Detail</div>
+                                </md-card-header>
                                 <md-card-content>
                                     <div class="md-field md-has-value">
                                         <label>Source State: </label>
@@ -145,18 +170,16 @@
 
                                     <div class="md-field md-has-value">
                                         <label for="permissions">Permissions: </label>
-                                        <div class="col-75">
-                                            <multiselect v-model="newApproval.permissions"
-                                                :options="availablePermissions" :multiple="true"
-                                                :close-on-select="false" :clear-on-select="true" :preserve-search="true"
-                                                placeholder="Pick permission(s)" label="name" track-by="name">
-                                                <template slot="selection" slot-scope="{ values, search, isOpen }"><span
-                                                        class="multiselect__single"
-                                                        v-if="newApproval.permissions.length &amp;&amp; !isOpen">{{ newApproval.permissions.length }}
-                                                        options
-                                                        selected</span></template>
-                                            </multiselect>
-                                        </div>
+                                        <multiselect v-model="newApproval.permissions" :options="availablePermissions"
+                                            :multiple="true" :close-on-select="false" :clear-on-select="true"
+                                            :preserve-search="true" placeholder="Pick permission(s)" label="name"
+                                            track-by="name">
+                                            <template slot="selection" slot-scope="{ values, search, isOpen }"><span
+                                                    class="multiselect__single"
+                                                    v-if="newApproval.permissions.length &amp;&amp; !isOpen">{{ newApproval.permissions.length }}
+                                                    options
+                                                    selected</span></template>
+                                        </multiselect>
                                     </div>
 
                                     <div class="md-field md-has-value">
@@ -175,7 +198,8 @@
                                     </div>
                                 </md-card-content>
                                 <md-card-actions>
-                                    <md-button class="md-raised md-primary">Create Approval</md-button>
+                                    <md-button class="md-raised md-primary" v-on:click="createApproval">Create Approval
+                                    </md-button>
                                     <md-card-actions>
                             </md-card>
                         </div>
@@ -210,7 +234,11 @@
                 this.sourceNode = sourceNode
                 this.targetNode = targetNode
                 this.elem = elem
+                this.approvals = []
                 this.id = sourceNode.id + "+" + targetNode.id
+            }
+            addApproval(approval) {
+                this.approvals.push(approval)
             }
         }
 
@@ -220,7 +248,6 @@
                 this.name = name
                 this.parent = parent
                 this.childs = {}
-                this.approvals = {}
                 if (this.parent) {
                     this.parent.addChild(this)
                 }
@@ -229,15 +256,11 @@
             addChild(node) {
                 this.childs[node.id] = node
             }
-
-            addApprovals(approval) {
-                this.approvals[approval.id] = approval
-            }
         }
 
         class Approval {
             constructor() {
-                this.id = undefined
+                this.id = '_' + Math.random().toString(36).substr(2, 9);
                 this.permissions = []
                 this.groups = []
                 this.priority = 0
@@ -278,6 +301,12 @@
             },
 
             methods: {
+                createApproval() {
+                    if (this.selectedEdge) {
+                        this.selectedEdge.addApproval(this.newApproval)
+                        this.newApproval = new Approval()
+                    }
+                },
                 createState() {
                     var existingNewState = this._exists(this.newStateName)
                     if (!existingNewState) {
